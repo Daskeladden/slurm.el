@@ -76,6 +76,19 @@ It is specified in `slurm-remote-host'."
   :group 'slurm
   :type  'boolean)
 
+;;;###autoload
+(defcustom slurm-watch-interval 30
+  "Interval in seconds for checking watched job status."
+  :group 'slurm
+  :type 'integer)
+
+;;;###autoload
+(defcustom slurm-watch-notify-function #'slurm-watch-notify-default
+  "Function to call when a watched job completes.
+The function is called with two arguments: JOB-ID and STATUS."
+  :group 'slurm
+  :type 'function)
+
 (defun slurm--set-squeue-format (var val)
   "Set the argument for the squeue Command from VAR and VAL."
   (set-default var val)
@@ -248,6 +261,89 @@ Assign it the new value VALUE."
         (plist-put slurm--state key value)))
 
 
+;; ** Job watching
+
+(defvar slurm-watch-timers (make-hash-table :test 'equal)
+  "Hash table mapping job IDs to their watch timers.")
+
+(defun slurm-watch-notify-default (job-id status)
+  "Default notification function for completed jobs.
+JOB-ID is the job identifier, STATUS is the final job state."
+  (message "SLURM job %s completed with status: %s" job-id status)
+  (when (fboundp 'alert)
+    (alert (format "Job %s: %s" job-id status)
+           :title "SLURM Job Complete"
+           :category 'slurm)))
+
+(defun slurm--get-job-state (job-id)
+  "Get the current state of JOB-ID.
+Returns nil if job not found, or the state string (e.g., COMPLETED, FAILED, RUNNING)."
+  (with-temp-buffer
+    (let ((result (call-process "squeue" nil t nil
+                                "-j" job-id
+                                "-h" "-o" "%T")))
+      (if (= result 0)
+          (let ((state (string-trim (buffer-string))))
+            (if (string-empty-p state) nil state))
+        ;; Job not in queue, check sacct
+        (erase-buffer)
+        (when (= 0 (call-process "sacct" nil t nil
+                                  "-j" job-id
+                                  "-n" "-o" "State" "-X"))
+          (let ((state (string-trim (buffer-string))))
+            (unless (string-empty-p state) state)))))))
+
+(defun slurm--check-watched-job (job-id)
+  "Check if watched JOB-ID has completed and notify if so."
+  (let ((state (slurm--get-job-state job-id)))
+    (when (and state
+               (not (member state '("PENDING" "RUNNING" "CONFIGURING"
+                                    "COMPLETING" "RESIZING" "SUSPENDED"))))
+      ;; Job has finished
+      (slurm-unwatch-job job-id)
+      (funcall slurm-watch-notify-function job-id state))))
+
+(defun slurm-watch-job (&optional job-id)
+  "Start watching JOB-ID for completion.
+When the job finishes, `slurm-watch-notify-function' is called.
+If JOB-ID is nil and in slurm-mode, use job at point."
+  (interactive)
+  (let ((id (or job-id
+                (when (eq major-mode 'slurm-mode)
+                  (slurm-job-id))
+                (read-string "Job ID to watch: "))))
+    (if (gethash id slurm-watch-timers)
+        (message "Already watching job %s" id)
+      (let ((timer (run-at-time slurm-watch-interval
+                                slurm-watch-interval
+                                #'slurm--check-watched-job
+                                id)))
+        (puthash id timer slurm-watch-timers)
+        (message "Watching job %s (checking every %ds)" id slurm-watch-interval)))))
+
+(defun slurm-unwatch-job (&optional job-id)
+  "Stop watching JOB-ID.
+If JOB-ID is nil, prompt with list of watched jobs."
+  (interactive)
+  (let* ((watched (hash-table-keys slurm-watch-timers))
+         (id (or job-id
+                 (if watched
+                     (completing-read "Unwatch job: " watched nil t)
+                   (user-error "No jobs being watched")))))
+    (when-let ((timer (gethash id slurm-watch-timers)))
+      (cancel-timer timer)
+      (remhash id slurm-watch-timers)
+      (message "Stopped watching job %s" id))))
+
+(defun slurm-list-watched-jobs ()
+  "Display a list of currently watched jobs."
+  (interactive)
+  (let ((watched (hash-table-keys slurm-watch-timers)))
+    (if watched
+        (message "Watching jobs: %s" (string-join watched ", "))
+      (message "No jobs being watched"))))
+
+
 ;; * Slurm mode
 
 ;; ** Mode definition
@@ -290,6 +386,9 @@ Assign it the new value VALUE."
     (define-key map (kbd "d")   'slurm-job-cancel)
     (define-key map (kbd "k")   'slurm-job-cancel)
     (define-key map (kbd "u")   'slurm-job-update)
+    (define-key map (kbd "w")   'slurm-watch-job)
+    (define-key map (kbd "W")   'slurm-unwatch-job)
+    (define-key map (kbd "L")   'slurm-list-watched-jobs)
     map)
   "Keymap for `slurm-mode-job'.")
 (defvar slurm-mode-manipulation-map
