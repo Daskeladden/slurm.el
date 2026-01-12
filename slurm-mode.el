@@ -279,19 +279,15 @@ JOB-ID is the job identifier, STATUS is the final job state."
   "Get the current state of JOB-ID.
 Returns nil if job not found, or the state string (e.g., COMPLETED, FAILED, RUNNING)."
   (with-temp-buffer
-    (let ((result (call-process "squeue" nil t nil
-                                "-j" job-id
-                                "-h" "-o" "%T")))
-      (if (= result 0)
-          (let ((state (string-trim (buffer-string))))
-            (if (string-empty-p state) nil state))
-        ;; Job not in queue, check sacct
+    (call-process "squeue" nil t nil "-j" job-id "-h" "-o" "%T")
+    (let ((state (string-trim (buffer-string))))
+      (if (not (string-empty-p state))
+          state
+        ;; Job not in queue, check sacct for final state
         (erase-buffer)
-        (when (= 0 (call-process "sacct" nil t nil
-                                  "-j" job-id
-                                  "-n" "-o" "State" "-X"))
-          (let ((state (string-trim (buffer-string))))
-            (unless (string-empty-p state) state)))))))
+        (call-process "sacct" nil t nil "-j" job-id "-n" "-o" "State" "-X")
+        (let ((sacct-state (string-trim (buffer-string))))
+          (unless (string-empty-p sacct-state) sacct-state))))))
 
 (defun slurm--check-watched-job (job-id)
   "Check if watched JOB-ID has completed and notify if so."
@@ -363,57 +359,53 @@ If JOB-ID is nil, prompt with list of watched jobs."
 
 ;; ** Job output viewing
 
+(defun slurm--get-job-file (job-id field)
+  "Get the file path for FIELD (StdOut or StdErr) from JOB-ID's scontrol output."
+  (with-temp-buffer
+    (when (= 0 (call-process "scontrol" nil t nil "show" "job" job-id))
+      (goto-char (point-min))
+      (when (re-search-forward (format "%s=\\([^\n ]+\\)" field) nil t)
+        (match-string 1)))))
+
 (defun slurm--get-job-output-file (job-id)
   "Get the stdout file path for JOB-ID from scontrol."
-  (with-temp-buffer
-    (when (= 0 (call-process "scontrol" nil t nil
-                              "show" "job" job-id))
-      (goto-char (point-min))
-      (when (re-search-forward "StdOut=\\([^\n ]+\\)" nil t)
-        (match-string 1)))))
+  (slurm--get-job-file job-id "StdOut"))
+
+(defun slurm--view-job-file (job-id field description)
+  "View the FIELD file (StdOut or StdErr) for JOB-ID.
+DESCRIPTION is used in messages (e.g., \"output\" or \"stderr\")."
+  (let ((file (slurm--get-job-file job-id field)))
+    (if (not file)
+        (user-error "Could not find %s file for job %s" description job-id)
+      (if (not (file-exists-p file))
+          (user-error "%s file does not exist yet: %s"
+                      (capitalize description) file)
+        (find-file-other-window file)
+        (goto-char (point-max))
+        (auto-revert-tail-mode 1)
+        (message "Viewing %s for job %s (auto-revert-tail-mode enabled)"
+                 description job-id)))))
+
+(defun slurm--resolve-job-id (job-id)
+  "Resolve JOB-ID from argument, point, or prompt."
+  (or job-id
+      (when (eq major-mode 'slurm-mode)
+        (slurm-job-id))
+      (read-string "Job ID: ")))
 
 (defun slurm-job-output (&optional job-id)
   "View the stdout log file for JOB-ID.
 Opens the file with `auto-revert-tail-mode' for live tailing.
 If JOB-ID is nil and in slurm-mode, use job at point."
   (interactive)
-  (let* ((id (or job-id
-                 (when (eq major-mode 'slurm-mode)
-                   (slurm-job-id))
-                 (read-string "Job ID: ")))
-         (output-file (slurm--get-job-output-file id)))
-    (if (not output-file)
-        (user-error "Could not find output file for job %s" id)
-      (if (not (file-exists-p output-file))
-          (user-error "Output file does not exist yet: %s" output-file)
-        (find-file-other-window output-file)
-        (goto-char (point-max))
-        (auto-revert-tail-mode 1)
-        (message "Viewing output for job %s (auto-revert-tail-mode enabled)" id)))))
+  (slurm--view-job-file (slurm--resolve-job-id job-id) "StdOut" "output"))
 
 (defun slurm-job-error-output (&optional job-id)
   "View the stderr log file for JOB-ID.
 Opens the file with `auto-revert-tail-mode' for live tailing.
 If JOB-ID is nil and in slurm-mode, use job at point."
   (interactive)
-  (let* ((id (or job-id
-                 (when (eq major-mode 'slurm-mode)
-                   (slurm-job-id))
-                 (read-string "Job ID: ")))
-         (error-file (with-temp-buffer
-                       (when (= 0 (call-process "scontrol" nil t nil
-                                                 "show" "job" id))
-                         (goto-char (point-min))
-                         (when (re-search-forward "StdErr=\\([^\n ]+\\)" nil t)
-                           (match-string 1))))))
-    (if (not error-file)
-        (user-error "Could not find error file for job %s" id)
-      (if (not (file-exists-p error-file))
-          (user-error "Error file does not exist yet: %s" error-file)
-        (find-file-other-window error-file)
-        (goto-char (point-max))
-        (auto-revert-tail-mode 1)
-        (message "Viewing stderr for job %s (auto-revert-tail-mode enabled)" id)))))
+  (slurm--view-job-file (slurm--resolve-job-id job-id) "StdErr" "stderr"))
 
 
 ;; * Slurm mode
