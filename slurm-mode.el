@@ -483,6 +483,7 @@ If JOB-ID is nil and in slurm-mode, use job at point."
 						 slurm-mode-job-map slurm-mode-manipulation-map)))
     (define-key map (kbd "h")   'describe-mode)
     (define-key map (kbd "?")   'describe-mode)
+    (define-key map (kbd "q")   'quit-window)
     map)
   "Keymap for `slurm-mode'.")
 
