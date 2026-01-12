@@ -361,6 +361,61 @@ If JOB-ID is nil, prompt with list of watched jobs."
         (pop-to-buffer buf)))))
 
 
+;; ** Job output viewing
+
+(defun slurm--get-job-output-file (job-id)
+  "Get the stdout file path for JOB-ID from scontrol."
+  (with-temp-buffer
+    (when (= 0 (call-process "scontrol" nil t nil
+                              "show" "job" job-id))
+      (goto-char (point-min))
+      (when (re-search-forward "StdOut=\\([^\n ]+\\)" nil t)
+        (match-string 1)))))
+
+(defun slurm-job-output (&optional job-id)
+  "View the stdout log file for JOB-ID.
+Opens the file with `auto-revert-tail-mode' for live tailing.
+If JOB-ID is nil and in slurm-mode, use job at point."
+  (interactive)
+  (let* ((id (or job-id
+                 (when (eq major-mode 'slurm-mode)
+                   (slurm-job-id))
+                 (read-string "Job ID: ")))
+         (output-file (slurm--get-job-output-file id)))
+    (if (not output-file)
+        (user-error "Could not find output file for job %s" id)
+      (if (not (file-exists-p output-file))
+          (user-error "Output file does not exist yet: %s" output-file)
+        (find-file-other-window output-file)
+        (goto-char (point-max))
+        (auto-revert-tail-mode 1)
+        (message "Viewing output for job %s (auto-revert-tail-mode enabled)" id)))))
+
+(defun slurm-job-error-output (&optional job-id)
+  "View the stderr log file for JOB-ID.
+Opens the file with `auto-revert-tail-mode' for live tailing.
+If JOB-ID is nil and in slurm-mode, use job at point."
+  (interactive)
+  (let* ((id (or job-id
+                 (when (eq major-mode 'slurm-mode)
+                   (slurm-job-id))
+                 (read-string "Job ID: ")))
+         (error-file (with-temp-buffer
+                       (when (= 0 (call-process "scontrol" nil t nil
+                                                 "show" "job" id))
+                         (goto-char (point-min))
+                         (when (re-search-forward "StdErr=\\([^\n ]+\\)" nil t)
+                           (match-string 1))))))
+    (if (not error-file)
+        (user-error "Could not find error file for job %s" id)
+      (if (not (file-exists-p error-file))
+          (user-error "Error file does not exist yet: %s" error-file)
+        (find-file-other-window error-file)
+        (goto-char (point-max))
+        (auto-revert-tail-mode 1)
+        (message "Viewing stderr for job %s (auto-revert-tail-mode enabled)" id)))))
+
+
 ;; * Slurm mode
 
 ;; ** Mode definition
@@ -406,6 +461,8 @@ If JOB-ID is nil, prompt with list of watched jobs."
     (define-key map (kbd "w")   'slurm-watch-job)
     (define-key map (kbd "W")   'slurm-unwatch-job)
     (define-key map (kbd "L")   'slurm-list-watched-jobs)
+    (define-key map (kbd "o")   'slurm-job-output)
+    (define-key map (kbd "e")   'slurm-job-error-output)
     map)
   "Keymap for `slurm-mode-job'.")
 (defvar slurm-mode-manipulation-map
