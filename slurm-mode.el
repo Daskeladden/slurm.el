@@ -336,12 +336,29 @@ If JOB-ID is nil, prompt with list of watched jobs."
       (message "Stopped watching job %s" id))))
 
 (defun slurm-list-watched-jobs ()
-  "Display a list of currently watched jobs."
+  "Display a buffer listing currently watched jobs with their states."
   (interactive)
   (let ((watched (hash-table-keys slurm-watch-timers)))
-    (if watched
-        (message "Watching jobs: %s" (string-join watched ", "))
-      (message "No jobs being watched"))))
+    (if (not watched)
+        (message "No jobs being watched")
+      (let ((buf (get-buffer-create "*SLURM Watched Jobs*")))
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert "SLURM Watched Jobs\n")
+            (insert "==================\n\n")
+            (insert (format "%-12s %-15s %s\n" "Job ID" "State" "Interval"))
+            (insert (make-string 45 ?-) "\n")
+            (dolist (job-id watched)
+              (let ((state (or (slurm--get-job-state job-id) "UNKNOWN")))
+                (insert (format "%-12s %-15s %ds\n"
+                                job-id state slurm-watch-interval))))
+            (insert "\n")
+            (insert "Press 'q' to close, 'W' to unwatch a job, 'g' to refresh\n"))
+          (special-mode)
+          (local-set-key (kbd "W") #'slurm-unwatch-job)
+          (local-set-key (kbd "g") #'slurm-list-watched-jobs))
+        (pop-to-buffer buf)))))
 
 
 ;; * Slurm mode
